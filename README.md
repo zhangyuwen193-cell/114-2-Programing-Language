@@ -8,6 +8,7 @@
 ##  課程筆記區
 ##  作業連結區
 ### 作業一 
+https://colab.research.google.com/drive/1D-eTY3tLzsO6WX_nFLnrsCnXWJfSPj2e#scrollTo=pBw3mmWzcJyA&uniqifier=2
 ### 作業二
 ### 作業三
 ### 作業四
