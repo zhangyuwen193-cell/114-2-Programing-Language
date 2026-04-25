@@ -1,0 +1,229 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "provenance": [],
+      "authorship_tag": "ABX9TyPgEYM5B4b6B/JiL2r259IJ",
+      "include_colab_link": true
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    },
+    "language_info": {
+      "name": "python"
+    }
+  },
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/zhangyuwen193-cell/114-2-Programing-Language/blob/main/HW3-1.0\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import os, time, uuid, re, json, datetime\n",
+        "from datetime import datetime as dt, timedelta\n",
+        "from dateutil.tz import gettz\n",
+        "import pandas as pd\n",
+        "import gradio as gr\n",
+        "from google.colab import auth\n",
+        "import gspread\n",
+        "from gspread_dataframe import set_with_dataframe, get_as_dataframe\n",
+        "from google.auth import default\n",
+        "from google.colab import userdata\n",
+        "\n",
+        "# --- 認證與初始化 ---\n",
+        "auth.authenticate_user()\n",
+        "creds, _ = default()\n",
+        "gc = gspread.authorize(creds)\n",
+        "\n",
+        "api_key = userdata.get('gemini') # 若不需要 AI 可忽略\n",
+        "if api_key:\n",
+        "    import google.generativeai as genai\n",
+        "    genai.configure(api_key=api_key)\n",
+        "\n",
+        "SHEET_URL = \"https://docs.google.com/spreadsheets/d/1nuxlXismt4ugcgkhf6SUOAco2ZKAtqGGcmWsnfvO2QI/edit?gid=1189087674#gid=1189087674\"\n",
+        "TIMEZONE = \"Asia/Taipei\"\n",
+        "TASKS_HEADER = [\"id\",\"task\",\"status\",\"priority\",\"est_min\",\"actual_min\",\"pomodoros\",\"due_date\",\"planned_for\",\"created_at\"]\n",
+        "LOGS_HEADER = [\"log_id\",\"task_id\",\"phase\",\"start_ts\",\"end_ts\",\"minutes\"]\n",
+        "\n",
+        "def tznow():\n",
+        "    return dt.now(gettz(TIMEZONE))\n",
+        "\n",
+        "# --- 讀取雲端資料 ---\n",
+        "sh_main = gc.open_by_url(SHEET_URL)\n",
+        "# 確保分頁存在\n",
+        "def get_ws(name, header):\n",
+        "    try:\n",
+        "        return sh_main.worksheet(name)\n",
+        "    except:\n",
+        "        ws = sh_main.add_worksheet(title=name, rows=\"1000\", cols=\"20\")\n",
+        "        ws.update([header])\n",
+        "        return ws\n",
+        "\n",
+        "ws_tasks = get_ws(\"tasks\", TASKS_HEADER)\n",
+        "ws_logs = get_ws(\"pomodoro_logs\", LOGS_HEADER)\n",
+        "\n",
+        "def read_tasks():\n",
+        "    df = get_as_dataframe(ws_tasks, evaluate_formulas=True, header=0).fillna(\"\")\n",
+        "    if df.empty: return pd.DataFrame(columns=TASKS_HEADER)\n",
+        "    return df[TASKS_HEADER]\n",
+        "\n",
+        "def list_task_choices(df):\n",
+        "    if df.empty: return []\n",
+        "    return [(f\"[{r['status']}] (P:{r['priority']}) {r['task']}\", r[\"id\"]) for _, r in df.iterrows()]\n",
+        "\n",
+        "tasks_df = read_tasks()\n",
+        "\n",
+        "# --- 核心邏輯 ---\n",
+        "def add_task(task_name, priority, target_pomos, planned_for):\n",
+        "    global tasks_df\n",
+        "    est_min = int(target_pomos) * 25  # 一個番茄 25 分鐘\n",
+        "    new_id = str(uuid.uuid4())[:8]\n",
+        "    new_row = pd.DataFrame([{\n",
+        "        \"id\": new_id, \"task\": task_name, \"status\": \"todo\", \"priority\": priority,\n",
+        "        \"est_min\": est_min, \"actual_min\": 0, \"pomodoros\": 0, \"due_date\": \"\",\n",
+        "        \"planned_for\": planned_for, \"created_at\": tznow().isoformat()\n",
+        "    }])\n",
+        "    tasks_df = pd.concat([tasks_df, new_row], ignore_index=True)\n",
+        "    # 寫回 Sheet (簡化版)\n",
+        "    set_with_dataframe(ws_tasks, tasks_df)\n",
+        "    choices = list_task_choices(tasks_df)\n",
+        "    return \"✅ 任務已新增\", tasks_df, gr.update(choices=choices), gr.update(choices=choices)\n",
+        "\n",
+        "# --- 倒數計時生成器 ---\n",
+        "def start_countdown(task_id):\n",
+        "    if not task_id:\n",
+        "        yield \"⚠️ 請先選擇任務\", \"00:00\"\n",
+        "        return\n",
+        "\n",
+        "    duration = 25 * 60  # 25 分鐘換算秒數\n",
+        "    start_time = tznow()\n",
+        "\n",
+        "    # 這裡開始倒數\n",
+        "    for i in range(duration, -1, -1):\n",
+        "        mins, secs = divmod(i, 60)\n",
+        "        timer_display = f\"{mins:02d}:{secs:02d}\"\n",
+        "        yield f\"🔥 番茄鐘運行中... (任務 ID: {task_id})\", timer_display\n",
+        "        time.sleep(1) # 每秒更新一次\n",
+        "\n",
+        "    yield \"🔔 時間到！請記錄並休息。\", \"00:00\"\n",
+        "\n",
+        "# --- Gradio 介面 ---\n",
+        "with gr.Blocks(css=\".timer-text { font-size: 60pt; font-weight: bold; text-align: center; color: #ff4b4b; }\") as demo:\n",
+        "    gr.Markdown(\"# 🍅 25分鐘專注番茄鐘\")\n",
+        "\n",
+        "    with gr.Tab(\"任務設定\"):\n",
+        "        with gr.Row():\n",
+        "            with gr.Column():\n",
+        "                name_in = gr.Textbox(label=\"任務名稱\", placeholder=\"要做什麼事？\")\n",
+        "                prio_in = gr.Dropdown([\"H\", \"M\", \"L\"], value=\"M\", label=\"優先級\")\n",
+        "                pomo_in = gr.Number(value=1, label=\"預計番茄數 (1個=25分)\", precision=0)\n",
+        "                plan_in = gr.Dropdown([\"today\", \"tomorrow\", \"\"], label=\"規劃執行時間\")\n",
+        "                btn_add = gr.Button(\"➕ 新增任務\", variant=\"primary\")\n",
+        "            with gr.Column():\n",
+        "                grid_tasks = gr.Dataframe(value=tasks_df, label=\"目前任務清單\")\n",
+        "\n",
+        "    with gr.Tab(\"番茄鐘計時\"):\n",
+        "        with gr.Row():\n",
+        "            task_sel = gr.Dropdown(choices=list_task_choices(tasks_df), label=\"選擇執行任務\")\n",
+        "\n",
+        "        # 倒數計時顯示區\n",
+        "        timer_html = gr.HTML(\"<div class='timer-text'>25:00</div>\", label=\"倒數計時\")\n",
+        "        status_msg = gr.Markdown(\"準備好後請按開始\")\n",
+        "\n",
+        "        with gr.Row():\n",
+        "            btn_start = gr.Button(\"▶️ 開始專注 (25分鐘)\", variant=\"primary\")\n",
+        "            btn_stop = gr.Button(\"⏹️ 停止並重置\")\n",
+        "\n",
+        "    # --- 互動邏輯 ---\n",
+        "\n",
+        "    # 1. 新增任務後的連鎖反應\n",
+        "    btn_add.click(\n",
+        "        add_task,\n",
+        "        inputs=[name_in, prio_in, pomo_in, plan_in],\n",
+        "        outputs=[status_msg, grid_tasks, task_sel]\n",
+        "    )\n",
+        "\n",
+        "    # 2. 倒數計時邏輯\n",
+        "    # 當按下開始時，更新 HTML 元件的內容\n",
+        "    def update_timer_ui(msg, time_str):\n",
+        "        return msg, f\"<div class='timer-text'>{time_str}</div>\"\n",
+        "\n",
+        "    # 使用生成器連動\n",
+        "    btn_start.click(\n",
+        "        start_countdown,\n",
+        "        inputs=[task_sel],\n",
+        "        outputs=[status_msg, timer_html]\n",
+        "    ).then(\n",
+        "        fn=lambda: \"番茄結束\", outputs=[status_msg]\n",
+        "    )\n",
+        "\n",
+        "    # 3. 停止按鈕 (簡單重置)\n",
+        "    btn_stop.click(lambda: (gr.update(value=\"<div class='timer-text'>25:00</div>\"), \"已重置\"), outputs=[timer_html, status_msg])\n",
+        "\n",
+        "demo.launch(debug=True)"
+      ],
+      "metadata": {
+        "id": "Sq6cpcP5dkwn",
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 836
+        },
+        "outputId": "092a9583-f0d7-4ac9-dbb8-b1d0e8a7fabb"
+      },
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "/usr/local/lib/python3.12/dist-packages/google/colab/_import_hooks/_hook_injector.py:55: FutureWarning: \n",
+            "\n",
+            "All support for the `google.generativeai` package has ended. It will no longer be receiving \n",
+            "updates or bug fixes. Please switch to the `google.genai` package as soon as possible.\n",
+            "See README for more details:\n",
+            "\n",
+            "https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md\n",
+            "\n",
+            "  loader.exec_module(module)\n",
+            "/tmp/ipykernel_12327/3897581472.py:90: DeprecationWarning: The 'css' parameter in the Blocks constructor will be removed in Gradio 6.0. You will need to pass 'css' to Blocks.launch() instead.\n",
+            "  with gr.Blocks(css=\".timer-text { font-size: 60pt; font-weight: bold; text-align: center; color: #ff4b4b; }\") as demo:\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "It looks like you are running Gradio on a hosted Jupyter notebook, which requires `share=True`. Automatically setting `share=True` (you can turn this off by setting `share=False` in `launch()` explicitly).\n",
+            "\n",
+            "Colab notebook detected. This cell will run indefinitely so that you can see errors and logs. To turn off, set debug=False in launch().\n",
+            "* Running on public URL: https://0093435eea8cc9f1c8.gradio.live\n",
+            "\n",
+            "This share link expires in 1 week. For free permanent hosting and GPU upgrades, run `gradio deploy` from the terminal in the working directory to deploy to Hugging Face Spaces (https://huggingface.co/spaces)\n"
+          ]
+        },
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": [
+              "<IPython.core.display.HTML object>"
+            ],
+            "text/html": [
+              "<div><iframe src=\"https://0093435eea8cc9f1c8.gradio.live\" width=\"100%\" height=\"500\" allow=\"autoplay; camera; microphone; clipboard-read; clipboard-write;\" frameborder=\"0\" allowfullscreen></iframe></div>"
+            ]
+          },
+          "metadata": {}
+        }
+      ]
+    }
+  ]
+}
