@@ -23,5 +23,10 @@
 -[HW3 Part1](https://github.com/zhangyuwen193-cell/114-2-Programing-Language/blob/main/HW3-1.0)作業
 
 -[HW3 Part1](https://youtu.be/bMN4nswWRhk)影片
+
+-[HW3 Part2](https://github.com/zhangyuwen193-cell/114-2-Programing-Language/blob/main/HW3-2)作業
+
+-[HW3 Part2](https://github.com/zhangyuwen193-cell/114-2-Programing-Language/blob/main/HW3-2](https://youtu.be/Uy1D9_B5OSI))影片
+
 ### 作業四
 ##  專題連結區
